@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Animation CCapture</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/110/three.min.js"></script>
+  <script src="./js/CCapture.all.min.js"></script>
+  <style>
+    .layout {
+      display: flex;
+    }
+
+    .src-area {
+      flex: 1 1 0;
+    }
+
+    .render-area {
+      margin-left: 20px;
+    }
+
+    #shaderViewer {
+      width: 700px;
+      height: 700px;
+    }
+
+    .editor-text {
+      width: 100%;
+      height: 300px;
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="src-area">
+      <div>
+        <input id="srcUrlText" type="text" style="width: 400px;">
+        <button id="fetchButton">ソースの取得</button>
+      </div>
+      <div class="editor">
+        <div class="editor__item">
+          <div>fragment shader</div>
+          <textarea id="fragmentShaderText" class="editor-text"></textarea>
+        </div>
+        <div class="editor__item">
+          <div>vertex shader</div>
+          <textarea id="vertexShaderText" class="editor-text"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="render-area">
+      <div>
+        <button id="renderButton"></button>
+        <button id="captureButton"></button>
+      </div>
+      <canvas id="shaderViewer" width="400" height="400"></canvas>
+    </div>
+  </div>
+  <script>
+    // デフォルトフラグメントシェーダー
+    const FRAGMENT_SHADER = `
+      void main() {
+        gl_FragColor = vec4(0, 0, 0, 1.0);
+      }
+    `;
+
+    // デフォルトバーテックスシェーダー
+    const VERTEX_SHADER = `
+      void main() {
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `;
+
+    // シェーダーを表示するクラス
+    class ShaderViewer {
+      constructor() {
+        // 描画中か
+        this.isRendering = false;
+        // キャプチャ中か
+        this.isCapturing = false;
+        // シェーダーに渡す変数
+        this.uniforms = {
+          u_mouse: { value: { x: 0.0, y: 0.0 }, },
+          u_resolution: { value: { x: window.innerWidth, y: window.innerHeight } },
+          u_time: { value: 0.0 },
+        };
+
+        this.render = this.render.bind(this);
+      }
+
+      /**
+       * 初期設定
+       */
+      setup(elCanvas) {
+        this.elCanvas = elCanvas;
+
+        // シーンを作成
+        this.scene = new THREE.Scene();
+
+        // カメラを作成
+        this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1);
+        this.camera.position.z = 1;
+
+        // レンダラーを作成
+        this.renderer = new THREE.WebGLRenderer({
+          canvas: elCanvas,
+          antialias: true,
+          preserveDrawingBuffer: true,
+        });
+        // this.renderer.setSize(window.innerWidth, window.innerHeight);
+
+        // 平面メッシュを作成
+        this.mesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(2, 2),
+          new THREE.ShaderMaterial(),
+        );
+
+        // 平面をシーンに追加
+        this.scene.add(this.mesh);
+
+        // 時間を計測する
+        this.clock = new THREE.Clock();
+      }
+
+      /**
+       * 描画
+       */
+      render() {
+        console.log('render');
+        this.uniforms.u_time.value = this.clock.getElapsedTime();
+        this.renderer.render(this.scene, this.camera);
+        if (this.isCapturing) {
+          this.capturer.capture(this.elCanvas);
+        }
+        if (this.isRendering) {
+          requestAnimationFrame(this.render);
+        }
+      }
+
+      /**
+       * 描画の開始
+       */
+      startRendering() {
+        if (this.isRendering) {
+          return;
+        }
+
+        // マウス座標の保存
+        document.addEventListener('mousemove', this._mousemoveHandler = (event) => {
+          this.uniforms.u_mouse.value.x = event.clientX;
+          this.uniforms.u_mouse.value.y = event.clientY;
+        });
+
+        // リサイズ処理
+        window.addEventListener('resize', this._resizeHandler = (event) => {
+          // this.renderer.setSize(window.innerWidth, window.innerHeight);
+          const size = this.renderer.getSize();
+          this.uniforms.u_resolution.value.x = size.x;
+          this.uniforms.u_resolution.value.y = size.y;
+        });
+        this._resizeHandler();
+
+        this.isRendering = true;
+        this.render();
+      }
+
+      /**
+       * 描画のストップ
+       */
+      stopRendering() {
+        if (!this.isRendering) {
+          return;
+        }
+        document.removeEventListener('mousemove', this._mousemoveHandler);
+        window.removeEventListener('resize', this._resizeHandler);
+        this.isRendering = false;
+      }
+
+      /**
+       * キャプチャの開始
+       */
+      startCapture() {
+        if (!this.isRendering) {
+          alert('描画中ではないのでキャプチャできません。');
+          return;
+        }
+        this.capturer = new CCapture({
+          name: 'shader',
+          format: 'gif',
+          workersPath: './js/',
+        });
+
+        this.isCapturing = true;
+        this.capturer.start();
+      }
+
+      /**
+       * キャプチャの終了
+       */
+      stopCapture() {
+        this.isCapturing = false;
+        this.capturer.stop();
+        this.capturer.save();
+      }
+
+      /**
+       * シェーダーの更新
+       * @param fragmentShader - フラグメントシェーダー
+       * @param vertexShader - バーテックスシェーダー
+       */
+      updateShader(fragmentShader, vertexShader) {
+        this.mesh.material = new THREE.ShaderMaterial({
+          uniforms: this.uniforms,
+          fragmentShader: fragmentShader || FRAGMENT_SHADER,
+          vertexShader: vertexShader || VERTEX_SHADER,
+        });
+      }
+    }
+  </script>
+  <script>
+    const elFragmentShaderText = document.getElementById('fragmentShaderText');
+    const elVertexShaderText = document.getElementById('vertexShaderText');
+
+    const elCanvas = document.getElementById('shaderViewer');
+    const viewer = new ShaderViewer();
+    viewer.setup(elCanvas);
+
+    // レンダリング設定
+    {
+      const elRenderButton = document.getElementById('renderButton');
+      const updateRenderButtonText = () => {
+        elRenderButton.innerText = viewer.isRendering ? '描画停止' : '描画開始';
+      };
+      updateRenderButtonText();
+      elRenderButton.addEventListener('click', () => {
+        if (viewer.isRendering) {
+          viewer.stopRendering();
+          updateRenderButtonText();
+          return;
+        }
+        viewer.updateShader(elFragmentShaderText.value, elVertexShaderText.value);
+        viewer.startRendering();
+        updateRenderButtonText();
+      });
+    }
+
+    // キャプチャー設定
+    {
+      const elCaptureButton = document.getElementById('captureButton');
+      const updateCaptureButtonText = () => {
+        elCaptureButton.innerText = viewer.isCapturing ? 'キャプチャ停止' : 'キャプチャ開始';
+      };
+      updateCaptureButtonText();
+      elCaptureButton.addEventListener('click', () => {
+        if (viewer.isCapturing) {
+          viewer.stopCapture();
+          updateCaptureButtonText();
+          return;
+        }
+        viewer.startCapture();
+        updateCaptureButtonText();
+      });
+    }
+
+    // ソースコードの取得
+    {
+      const GAS_API = 'https://script.google.com/macros/s/AKfycbxBinPm7bgbIzGTAOQek64gXQFqr5dG5mRPic-K8LaWEv6UhNDd/exec';
+
+      const elFetchButton = document.getElementById('fetchButton');
+      elFetchButton.addEventListener('click', async () => {
+        const pagePath = (() => {
+          const srcUrl = document.getElementById('srcUrlText').value;
+          const match = srcUrl.match(/https:\/\/scrapbox.io\/([a-zA-Z0-9()%/-]+)$/);
+          if (!match) {
+            throw new Error('cannot get scrapbox path');
+          }
+          return match[1];
+        })();
+
+        const [fragmentShader, vertexShader] = await Promise.all([
+          fetch(`${GAS_API}?url=/api/code/${pagePath}/fragment-shader.glsl`)
+            .then((req) => req.text())
+            .catch(() => ''),
+          fetch(`${GAS_API}?url=/api/code/${pagePath}/vertex-shader.glsl`)
+            .then((req) => req.text())
+            .catch(() => ''),
+        ]);
+        elFragmentShaderText.value = fragmentShader;
+        elVertexShaderText.value = vertexShader;
+      });
+    }
+  </script>
+</body>
+</html>
